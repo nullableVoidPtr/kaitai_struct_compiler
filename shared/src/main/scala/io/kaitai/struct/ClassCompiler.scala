@@ -37,7 +37,7 @@ class ClassCompiler(
   }
 
   /**
-    * Generates code for one full class using a given [[ClassSpec]].
+    * Generates code for one full class using a given [[format.ClassSpec]].
     * @param curClass current class to generate code for
     */
   def compileClass(curClass: ClassSpec): Unit = {
@@ -102,6 +102,8 @@ class ClassCompiler(
     compileAttrDeclarations(allAttrs)
     compileAttrReaders(allAttrs)
 
+    curClass.toStringExpr.foreach(expr => lang.classToString(expr))
+
     lang.classFooter(curClass.name)
 
     if (!lang.innerClasses)
@@ -131,7 +133,7 @@ class ClassCompiler(
     compileInit(curClass)
     curClass.instances.foreach { case (instName, _) => lang.instanceClear(instName) }
     if (lang.config.autoRead)
-      lang.runRead()
+      lang.runRead(curClass.name)
     lang.classConstructorFooter
   }
 
@@ -360,7 +362,7 @@ class ClassCompiler(
 
   def isUnalignedBits(dt: DataType): Boolean =
     dt match {
-      case _: BitsType | BitsType1 => true
+      case _: BitsType | _: BitsType1 => true
       case et: EnumType => isUnalignedBits(et.basedOn)
       case _ => false
     }

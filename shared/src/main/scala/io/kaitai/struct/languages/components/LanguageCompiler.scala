@@ -9,7 +9,7 @@ import io.kaitai.struct.{ClassTypeProvider, RuntimeConfig}
 import scala.collection.mutable.ListBuffer
 
 abstract class LanguageCompiler(
-  typeProvider: ClassTypeProvider,
+  val typeProvider: ClassTypeProvider,
   val config: RuntimeConfig
 ) extends SwitchOps with ValidateOps
   with ExtraAttrs {
@@ -54,11 +54,24 @@ abstract class LanguageCompiler(
 
   def debug: Boolean = !config.autoRead && config.readStoresPos
 
+  /**
+    * @return String which is supposed to fill one level of indentation customary to the target
+    *         language. Most often it's either a tab or a sequence of spaces.
+    */
   def indent: String
-  def outFileName(topClassName: String): String
 
   def type2class(className: String): String
+
+  /**
+    * Generates file header for a top-level type.
+    * @param topClassName top-level name type in KS notation (lower underscore)
+    */
   def fileHeader(topClassName: String): Unit
+
+  /**
+    * Generated file footer for a top-level type.
+    * @param topClassName top-level name type in KS notation (lower underscore)
+    */
   def fileFooter(topClassName: String): Unit = {}
   def importFile(file: String): Unit = {}
 
@@ -81,9 +94,24 @@ abstract class LanguageCompiler(
   def classDestructorHeader(name: List[String], parentType: DataType, topClassName: List[String]): Unit = {}
   def classDestructorFooter: Unit = {}
 
-  def runRead(): Unit
+  def runRead(name: List[String]): Unit
   def runReadCalc(): Unit
+
+  /**
+    * Generates header for a common `_read()` method or an endianness-specific `_read_be()` /
+    * `_read_le()` method - typically a method declaration/definition. This method is supposed to
+    * perform reading of sequence attributes.
+    * @param endian specifies whether to create a common `_read` method (if None), or an
+    *               endianness-specific `read_be` or `read_le` method (if Some)
+    * @param isEmpty true if created method is expected to be empty, i.e. no sequence attributes
+    *                reads are expected to be performed inside it.
+    */
   def readHeader(endian: Option[FixedEndian], isEmpty: Boolean): Unit
+
+  /**
+    * Generates footer for a `_read()` / `_read_be()` / `_read_le()` methods. This method is
+    * supposed to perform reading of sequence attributes.
+    */
   def readFooter(): Unit
 
   def attributeDeclaration(attrName: Identifier, attrType: DataType, isNullable: Boolean): Unit
@@ -103,14 +131,16 @@ abstract class LanguageCompiler(
   def condIfHeader(expr: Ast.expr): Unit
   def condIfFooter(expr: Ast.expr): Unit
 
-  def condRepeatEosHeader(id: Identifier, io: String, dataType: DataType, needRaw: NeedRaw): Unit
+  def condRepeatCommonInit(id: Identifier, dataType: DataType, needRaw: NeedRaw): Unit
+
+  def condRepeatEosHeader(id: Identifier, io: String, dataType: DataType): Unit
   def condRepeatEosFooter: Unit
 
-  def condRepeatExprHeader(id: Identifier, io: String, dataType: DataType, needRaw: NeedRaw, repeatExpr: Ast.expr): Unit
+  def condRepeatExprHeader(id: Identifier, io: String, dataType: DataType, repeatExpr: Ast.expr): Unit
   def condRepeatExprFooter: Unit
 
-  def condRepeatUntilHeader(id: Identifier, io: String, dataType: DataType, needRaw: NeedRaw, repeatExpr: Ast.expr): Unit
-  def condRepeatUntilFooter(id: Identifier, io: String, dataType: DataType, needRaw: NeedRaw, repeatExpr: Ast.expr): Unit
+  def condRepeatUntilHeader(id: Identifier, io: String, dataType: DataType, untilExpr: Ast.expr): Unit
+  def condRepeatUntilFooter(id: Identifier, io: String, dataType: DataType, untilExpr: Ast.expr): Unit
 
   def attrProcess(proc: ProcessExpr, varSrc: Identifier, varDest: Identifier, rep: RepeatSpec): Unit
 
@@ -141,6 +171,15 @@ abstract class LanguageCompiler(
     */
   def debugClassSequence(seq: List[AttrSpec]) = {}
 
+  /**
+    * Generates custom member of the class (typically named `toString()` / `inspect` /
+    * `__repr__` / similar) that gets contents of all important members of the class
+    * as a single string. Usually used for debugging purposes / internal dumping mechanism.
+    * Custom expression to render can be specified with `to-string` type-level KSY key.
+    * @param toStringExpr custom expression in class context to render the string.
+    */
+  def classToString(toStringExpr: Ast.expr): Unit = {}
+
   def attrParseIfHeader(id: Identifier, ifExpr: Option[Ast.expr]): Unit = {
     ifExpr match {
       case Some(e) =>
@@ -157,4 +196,7 @@ abstract class LanguageCompiler(
       case None => // ignore
     }
   }
+
+  def blockScopeHeader: Unit = {}
+  def blockScopeFooter: Unit = {}
 }

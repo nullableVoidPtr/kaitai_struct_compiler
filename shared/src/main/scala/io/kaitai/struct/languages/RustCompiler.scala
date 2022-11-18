@@ -108,7 +108,7 @@ class RustCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
     out.puts
   }
 
-  override def runRead(): Unit = {
+  override def runRead(name: List[String]): Unit = {
 
   }
 
@@ -253,44 +253,36 @@ class RustCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
     out.inc
   }
 
-  override def condRepeatEosHeader(id: Identifier, io: String, dataType: DataType, needRaw: NeedRaw): Unit = {
+  override def condRepeatCommonInit(id: Identifier, dataType: DataType, needRaw: NeedRaw): Unit = {
     if (needRaw.level >= 1)
-      out.puts(s"${privateMemberName(RawIdentifier(id))} = [];")
+      out.puts(s"${privateMemberName(RawIdentifier(id))} = vec!();")
     if (needRaw.level >= 2)
-      out.puts(s"${privateMemberName(RawIdentifier(RawIdentifier(id)))} = [];")
-    out.puts(s"${privateMemberName(id)} = [];")
+      out.puts(s"${privateMemberName(RawIdentifier(RawIdentifier(id)))} = vec!();")
+    out.puts(s"${privateMemberName(id)} = vec!();")
+  }
+
+  override def condRepeatEosHeader(id: Identifier, io: String, dataType: DataType): Unit = {
     out.puts(s"while !$io.isEof() {")
     out.inc
   }
 
   override def handleAssignmentRepeatEos(id: Identifier, expr: String): Unit = {
-    out.puts(s"${privateMemberName(id)}.push($expr);")
+    out.puts(s"${privateMemberName(id)}.append($expr);")
   }
 
   override def condRepeatEosFooter: Unit = {
     super.condRepeatEosFooter
   }
 
-  override def condRepeatExprHeader(id: Identifier, io: String, dataType: DataType, needRaw: NeedRaw, repeatExpr: Ast.expr): Unit = {
-    if (needRaw.level >= 1)
-      out.puts(s"${privateMemberName(RawIdentifier(id))} = vec!();")
-    if (needRaw.level >= 2)
-      out.puts(s"${privateMemberName(RawIdentifier(RawIdentifier(id)))} = vec!();")
-    out.puts(s"${privateMemberName(id)} = vec!();")
+  override def condRepeatExprHeader(id: Identifier, io: String, dataType: DataType, repeatExpr: Ast.expr): Unit = {
     out.puts(s"for i in 0..${expression(repeatExpr)} {")
     out.inc
   }
 
-  override def handleAssignmentRepeatExpr(id: Identifier, expr: String): Unit = {
-    out.puts(s"${privateMemberName(id)}.push($expr);")
-  }
+  override def handleAssignmentRepeatExpr(id: Identifier, expr: String): Unit =
+    handleAssignmentRepeatEos(id, expr)
 
-  override def condRepeatUntilHeader(id: Identifier, io: String, dataType: DataType, needRaw: NeedRaw, untilExpr: Ast.expr): Unit = {
-    if (needRaw.level >= 1)
-      out.puts(s"${privateMemberName(RawIdentifier(id))} = vec!();")
-    if (needRaw.level >= 2)
-      out.puts(s"${privateMemberName(RawIdentifier(RawIdentifier(id)))} = vec!();")
-    out.puts(s"${privateMemberName(id)} = vec!();")
+  override def condRepeatUntilHeader(id: Identifier, io: String, dataType: DataType, untilExpr: Ast.expr): Unit = {
     out.puts("while {")
     out.inc
   }
@@ -302,10 +294,10 @@ class RustCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
       translator.doLocalName(Identifier.ITERATOR)
     }
     out.puts(s"let $tempVar = $expr;")
-    out.puts(s"${privateMemberName(id)}.append($expr);")
+    out.puts(s"${privateMemberName(id)}.append($tempVar);")
   }
 
-  override def condRepeatUntilFooter(id: Identifier, io: String, dataType: DataType, needRaw: NeedRaw, untilExpr: Ast.expr): Unit = {
+  override def condRepeatUntilFooter(id: Identifier, io: String, dataType: DataType, untilExpr: Ast.expr): Unit = {
     typeProvider._currentIteratorType = Some(dataType)
     out.puts(s"!(${expression(untilExpr)})")
     out.dec
@@ -326,9 +318,9 @@ class RustCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
         s"$io.read_bytes_full()?"
       case BytesTerminatedType(terminator, include, consume, eosError, _) =>
         s"$io.read_bytes_term($terminator, $include, $consume, $eosError)?"
-      case BitsType1 =>
+      case BitsType1(bitEndian) =>
         s"$io.read_bits_int(1)? != 0"
-      case BitsType(width: Int) =>
+      case BitsType(width: Int, bitEndian) =>
         s"$io.read_bits_int($width)?"
       case t: UserType =>
         val addParams = Utils.join(t.args.map((a) => translator.translate(a)), "", ", ", ", ")
@@ -400,7 +392,7 @@ class RustCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
 
   override def switchCaseStart(condition: Ast.expr): Unit = {
     if (switchIfs) {
-      out.puts(s"elss if ${switchCmpExpr(condition)} {")
+      out.puts(s"else if ${switchCmpExpr(condition)} {")
       out.inc
     } else {
       out.puts(s"${expression(condition)} => {")
@@ -523,7 +515,7 @@ class RustCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
       case FloatMultiType(Width4, _) => "f32"
       case FloatMultiType(Width8, _) => "f64"
 
-      case BitsType(_) => "u64"
+      case BitsType(_, _) => "u64"
 
       case _: BooleanType => "bool"
       case CalcIntType => "i32"
@@ -544,7 +536,7 @@ class RustCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
 
       case at: ArrayType => s"Vec<${kaitaiType2NativeType(at.elType)}>"
 
-      case KaitaiStreamType => s"Option<Box<KaitaiStream>>"
+      case KaitaiStreamType | OwnedKaitaiStreamType => s"Option<Box<KaitaiStream>>"
       case KaitaiStructType | CalcKaitaiStructType => s"Option<Box<KaitaiStruct>>"
 
       case st: SwitchType => kaitaiType2NativeType(st.combinedType)
@@ -566,7 +558,7 @@ class RustCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
       case FloatMultiType(Width4, _) => "0"
       case FloatMultiType(Width8, _) => "0"
 
-      case BitsType(_) => "0"
+      case BitsType(_, _) => "0"
 
       case _: BooleanType => "false"
       case CalcIntType => "0"
@@ -580,7 +572,7 @@ class RustCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
 
       case ArrayTypeInStream(inType) => "vec!()"
 
-      case KaitaiStreamType => "None"
+      case KaitaiStreamType | OwnedKaitaiStreamType => "None"
       case KaitaiStructType => "None"
 
       case _: SwitchType => ""

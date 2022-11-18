@@ -118,7 +118,7 @@ class PHPCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
     params.foreach((p) => handleAssignmentSimple(p.id, paramName(p.id)))
   }
 
-  override def runRead(): Unit =
+  override def runRead(name: List[String]): Unit =
     out.puts("$this->_read();")
 
   override def runReadCalc(): Unit = {
@@ -267,12 +267,15 @@ class PHPCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
     out.inc
   }
 
-  override def condRepeatEosHeader(id: Identifier, io: String, dataType: DataType, needRaw: NeedRaw): Unit = {
+  override def condRepeatCommonInit(id: Identifier, dataType: DataType, needRaw: NeedRaw): Unit = {
     if (needRaw.level >= 1)
       out.puts(s"${privateMemberName(RawIdentifier(id))} = [];")
     if (needRaw.level >= 2)
       out.puts(s"${privateMemberName(RawIdentifier(RawIdentifier(id)))} = [];")
     out.puts(s"${privateMemberName(id)} = [];")
+  }
+
+  override def condRepeatEosHeader(id: Identifier, io: String, dataType: DataType): Unit = {
     out.puts("$i = 0;")
     out.puts(s"while (!$io->isEof()) {")
     out.inc
@@ -287,27 +290,16 @@ class PHPCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
     super.condRepeatEosFooter
   }
 
-  override def condRepeatExprHeader(id: Identifier, io: String, dataType: DataType, needRaw: NeedRaw, repeatExpr: Ast.expr): Unit = {
-    if (needRaw.level >= 1)
-      out.puts(s"${privateMemberName(RawIdentifier(id))} = [];")
-    if (needRaw.level >= 2)
-      out.puts(s"${privateMemberName(RawIdentifier(RawIdentifier(id)))} = [];")
-    out.puts(s"${privateMemberName(id)} = [];")
+  override def condRepeatExprHeader(id: Identifier, io: String, dataType: DataType, repeatExpr: Ast.expr): Unit = {
     out.puts(s"$$n = ${expression(repeatExpr)};")
     out.puts("for ($i = 0; $i < $n; $i++) {")
     out.inc
   }
 
-  override def handleAssignmentRepeatExpr(id: Identifier, expr: String): Unit = {
-    out.puts(s"${privateMemberName(id)}[] = $expr;")
-  }
+  override def handleAssignmentRepeatExpr(id: Identifier, expr: String): Unit =
+    handleAssignmentRepeatEos(id, expr)
 
-  override def condRepeatUntilHeader(id: Identifier, io: String, dataType: DataType, needRaw: NeedRaw, untilExpr: Ast.expr): Unit = {
-    if (needRaw.level >= 1)
-      out.puts(s"${privateMemberName(RawIdentifier(id))} = [];")
-    if (needRaw.level >= 2)
-      out.puts(s"${privateMemberName(RawIdentifier(RawIdentifier(id)))} = [];")
-    out.puts(s"${privateMemberName(id)} = [];")
+  override def condRepeatUntilHeader(id: Identifier, io: String, dataType: DataType, untilExpr: Ast.expr): Unit = {
     out.puts("$i = 0;")
     out.puts("do {")
     out.inc
@@ -319,7 +311,7 @@ class PHPCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
     out.puts(s"${privateMemberName(id)}[] = $tmpName;")
   }
 
-  override def condRepeatUntilFooter(id: Identifier, io: String, dataType: DataType, needRaw: NeedRaw, untilExpr: Ast.expr): Unit = {
+  override def condRepeatUntilFooter(id: Identifier, io: String, dataType: DataType, untilExpr: Ast.expr): Unit = {
     typeProvider._currentIteratorType = Some(dataType)
     out.puts("$i++;")
     out.dec
@@ -343,10 +335,10 @@ class PHPCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
         s"$io->readBytesFull()"
       case BytesTerminatedType(terminator, include, consume, eosError, _) =>
         s"$io->readBytesTerm($terminator, $include, $consume, $eosError)"
-      case BitsType1 =>
-        s"$io->readBitsInt(1) != 0"
-      case BitsType(width: Int) =>
-        s"$io->readBitsInt($width)"
+      case BitsType1(bitEndian) =>
+        s"$io->readBitsInt${Utils.upperCamelCase(bitEndian.toSuffix)}(1) != 0"
+      case BitsType(width: Int, bitEndian) =>
+        s"$io->readBitsInt${Utils.upperCamelCase(bitEndian.toSuffix)}($width)"
       case t: UserType =>
         val addParams = Utils.join(t.args.map((a) => translator.translate(a)), "", ", ", ", ")
         val addArgs = if (t.isOpaque) {
@@ -427,22 +419,16 @@ class PHPCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
     classHeader(name, None)
     enumColl.foreach { case (id, label) =>
       universalDoc(label.doc)
-      out.puts(s"const ${value2Const(label.name)} = $id;")
+      out.puts(s"const ${value2Const(label.name)} = ${translator.doIntLiteral(id)};")
     }
     classFooter(name)
   }
 
   def value2Const(label: String) = Utils.upperUnderscoreCase(label)
 
-  def idToStr(id: Identifier): String = {
-    id match {
-      case SpecialIdentifier(name) => name
-      case NamedIdentifier(name) => Utils.lowerCamelCase(name)
-      case NumberedIdentifier(idx) => s"_${NumberedIdentifier.TEMPLATE}$idx"
-      case InstanceIdentifier(name) => Utils.lowerCamelCase(name)
-      case RawIdentifier(innerId) => "_raw_" + idToStr(innerId)
-    }
-  }
+  override def idToStr(id: Identifier): String = PHPCompiler.idToStr(id)
+
+  override def publicMemberName(id: Identifier) = PHPCompiler.publicMemberName(id)
 
   override def privateMemberName(id: Identifier): String = {
     id match {
@@ -452,8 +438,6 @@ class PHPCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
       case _ => s"$$this->_m_${idToStr(id)}"
     }
   }
-
-  override def publicMemberName(id: Identifier) = idToStr(id)
 
   override def localTemporaryName(id: Identifier): String = s"$$_t_${idToStr(id)}"
 
@@ -484,7 +468,7 @@ class PHPCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
       case _: ArrayType => "array"
 
       case KaitaiStructType | CalcKaitaiStructType => kstructName
-      case KaitaiStreamType => kstreamName
+      case KaitaiStreamType | OwnedKaitaiStreamType => kstreamName
     }
   }
 
@@ -494,13 +478,13 @@ class PHPCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
     attrId: Identifier,
     attrType: DataType,
     checkExpr: Ast.expr,
-    errName: String,
+    err: KSError,
     errArgs: List[Ast.expr]
   ): Unit = {
     val errArgsStr = errArgs.map(translator.translate).mkString(", ")
     out.puts(s"if (!(${translator.translate(checkExpr)})) {")
     out.inc
-    out.puts(s"throw new $errName($errArgsStr);")
+    out.puts(s"throw new ${ksErrorName(err)}($errArgsStr);")
     out.dec
     out.puts("}")
   }
@@ -514,6 +498,17 @@ object PHPCompiler extends LanguageCompilerStatic
     tp: ClassTypeProvider,
     config: RuntimeConfig
   ): LanguageCompiler = new PHPCompiler(tp, config)
+
+  def idToStr(id: Identifier): String =
+    id match {
+      case SpecialIdentifier(name) => name
+      case NamedIdentifier(name) => Utils.lowerCamelCase(name)
+      case NumberedIdentifier(idx) => s"_${NumberedIdentifier.TEMPLATE}$idx"
+      case InstanceIdentifier(name) => Utils.lowerCamelCase(name)
+      case RawIdentifier(innerId) => s"_raw_${idToStr(innerId)}"
+    }
+
+  def publicMemberName(id: Identifier) = idToStr(id)
 
   override def kstreamName: String = "\\Kaitai\\Struct\\Stream"
 
