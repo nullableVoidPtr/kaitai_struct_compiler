@@ -11,6 +11,9 @@ import io.kaitai.struct.languages.TypeScriptCompiler
 class TypeScriptTranslator(provider: TypeProvider) extends BaseTranslator(provider) {
   override def doByteArrayNonLiteral(elts: Seq[Ast.expr]): String =
     s"new Uint8Array([${elts.map(translate).mkString(", ")}])"
+  
+  override def doByteArrayLiteral(arr: Seq[Byte]): String =
+    s"new Uint8Array([${arr.map(_ & 0xff).mkString(", ")}])"
 
   /**
     * JavaScript rendition of common control character that would use hex form,
@@ -25,12 +28,38 @@ class TypeScriptTranslator(provider: TypeProvider) extends BaseTranslator(provid
   override def strLiteralGenericCC(code: Char): String =
     "\\x%02x".format(code.toInt)
 
+  def bigIntTranslate(e: Ast.expr): String = e match {
+    case expr.IntNum(x) => s"${x}n"
+    case _ => s"BigInt(${translate(e)})"
+  }
+
   override def numericBinOp(left: Ast.expr, op: Ast.operator, right: Ast.expr) = {
+    // TODO identify literals and use bigint suffix
     (detectType(left), detectType(right), op) match {
+      case (_: IntType, IntMultiType(_, Width8, _), Ast.operator.Add) =>
+        s"${bigIntTranslate(left)} + ${translate(right)}"
+      case (IntMultiType(_, Width8, _), _: IntType, Ast.operator.Add) =>
+        s"${translate(left)} + ${bigIntTranslate(right)}"
+      case (_: IntType, IntMultiType(_, Width8, _), Ast.operator.Sub) =>
+        s"${bigIntTranslate(left)} - ${translate(right)}"
+      case (IntMultiType(_, Width8, _), _: IntType, Ast.operator.Sub) =>
+        s"${translate(left)} - ${bigIntTranslate(right)}"
+      case (_: IntType, IntMultiType(_, Width8, _), Ast.operator.Mult) =>
+        s"${bigIntTranslate(left)} * ${translate(right)}"
+      case (IntMultiType(_, Width8, _), _: IntType, Ast.operator.Mult) =>
+        s"${translate(left)} * ${bigIntTranslate(right)}"
+      case (IntMultiType(_, Width8, _), IntMultiType(_, Width8, _), Ast.operator.Div) =>
+        s"${translate(left)} / ${translate(right)}"
+      case (_: IntType, IntMultiType(_, Width8, _), Ast.operator.Div) =>
+        s"${bigIntTranslate(left)} / ${translate(right)}"
+      case (IntMultiType(_, Width8, _), _: IntType, Ast.operator.Div) =>
+        s"${translate(left)} / ${bigIntTranslate(right)}"
       case (_: IntType, _: IntType, Ast.operator.Div) =>
         s"Math.floor(${translate(left)} / ${translate(right)})"
       case (_: IntType, _: IntType, Ast.operator.Mod) =>
         s"${TypeScriptCompiler.kstreamName}.mod(${translate(left)}, ${translate(right)})"
+      case (IntMultiType(_, Width8, _), IntMultiType(_, Width8, _), Ast.operator.RShift) =>
+        s"(${translate(left)} >> ${translate(right)})"
       case (_: IntType, _: IntType, Ast.operator.RShift) =>
         s"(${translate(left)} >>> ${translate(right)})"
       case _ =>
@@ -43,7 +72,7 @@ class TypeScriptTranslator(provider: TypeProvider) extends BaseTranslator(provid
       case "_" => s
       case Identifier.SWITCH_ON => "on"
       case Identifier.INDEX => "i"
-      case _ => s"this.${doName(s)}"
+      case _ => s"this.${doName(s)}!"
     }
   }
 
@@ -54,17 +83,36 @@ class TypeScriptTranslator(provider: TypeProvider) extends BaseTranslator(provid
     }
   }
 
+  override def doInternalName(id: Identifier): String =
+    s"this.${TypeScriptCompiler.publicMemberName(id)}!"
+
   override def doEnumByLabel(enumType: List[String], label: String): String =
     s"${TypeScriptCompiler.types2class(enumType)}.${Utils.upperUnderscoreCase(label)}"
   override def doEnumById(enumTypeAbs: List[String], label: String): String =
     // Just an integer, without any casts / resolutions - one would have to look up constants manually
     label
 
+  override def doNumericCompareOp(left: Ast.expr, op: Ast.cmpop, right: Ast.expr): String = {
+    (detectType(left), detectType(right)) match {
+      case (_, IntMultiType(_, Width8, _)) =>
+         s"${bigIntTranslate(left)} ${cmpOp(op)} ${translate(right)}"
+      case (IntMultiType(_, Width8, _), _) =>
+        s"${translate(left)} ${cmpOp(op)} ${bigIntTranslate(right)}"
+      case _ => s"${translate(left)} ${cmpOp(op)} ${translate(right)}"
+    }
+  }
+
   override def doBytesCompareOp(left: Ast.expr, op: Ast.cmpop, right: Ast.expr): String =
     s"(${TypeScriptCompiler.kstreamName}.byteArrayCompare(${translate(left)}, ${translate(right)}) ${cmpOp(op)} 0)"
 
-  override def arraySubscript(container: expr, idx: expr): String =
-    s"${translate(container)}[${translate(idx)}]"
+  override def arraySubscript(container: expr, idx: expr): String = {
+    val index = detectType(idx) match {
+      case IntMultiType(_, Width8, _) =>
+        s"${TypeScriptCompiler.kstreamName}.castBigInt(${translate(idx)})"
+      case _ => translate(idx)
+    }
+    s"${translate(container)}[$index]"
+  }
   override def doIfExp(condition: expr, ifTrue: expr, ifFalse: expr): String =
     s"(${translate(condition)} ? ${translate(ifTrue)} : ${translate(ifFalse)})"
   override def doCast(value: Ast.expr, typeName: DataType): String =
@@ -88,7 +136,7 @@ class TypeScriptTranslator(provider: TypeProvider) extends BaseTranslator(provid
     * @return string rendition of conversion
     */
   override def boolToInt(v: expr): String =
-    s"(${translate(v)} | 0)"
+    s"Number(${translate(v)})"
 
   /**
     * Converts a float to an integer in JavaScript. There are many methods to
@@ -134,5 +182,8 @@ class TypeScriptTranslator(provider: TypeProvider) extends BaseTranslator(provid
     s"${TypeScriptCompiler.kstreamName}.arrayMax(${translate(a)})"
 
   override def kaitaiStreamEof(value: Ast.expr): String =
-    s"${translate(value)}.isEof()"
+    s"${translate(value)}.is_eof"
+
+  override def anyField(value: Ast.expr, attrName: String): String =
+    s"${translate(value)}.${doName(attrName)}!"
 }
